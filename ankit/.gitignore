@@ -1,0 +1,22 @@
+# Python
+__pycache__/
+*.pyc
+
+# Virtual Environment
+venv/
+.env
+.env.*
+
+# VS Code
+.vscode/
+
+# Downloads
+downloads/
+downloads1/
+downloads2/
+
+# Captcha images
+captcha/
+
+# Logs
+*.log
