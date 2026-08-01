@@ -1,20 +1,3 @@
-"""
-captcha_ocr.py
-
-Multi-pipeline OCR preprocessing experiment for distorted CAPTCHA images.
-
-For every image in INPUT_FOLDER, this script:
-  1. Generates several independent preprocessing variants (Otsu, adaptive
-     threshold, CLAHE, sharpened, blackhat/tophat line-removal, etc.)
-  2. Runs Tesseract on each variant via image_to_data
-  3. Computes the average per-character confidence for each variant
-  4. Picks the variant with the highest confidence as the "best" result
-  5. Saves every variant to its own subfolder (for visual comparison)
-  6. Prints a summary report and writes a CSV log
-
-Requires: opencv-python, numpy, pytesseract, Tesseract-OCR installed locally.
-"""
-
 import os
 import csv
 import cv2
@@ -26,24 +9,18 @@ from dataclasses import dataclass, field
 # CONFIGURATION
 # --------------------------------------------------------------------------
 
-# Point this at your local tesseract binary (Windows example shown).
-# On Linux/Mac, comment this out if tesseract is already on PATH.
 pytesseract.pytesseract.tesseract_cmd = r"C:\Program Files\Tesseract-OCR\tesseract.exe"
 
-INPUT_FOLDER = "captcha"
-OUTPUT_FOLDER = "output"
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+INPUT_IMAGE = os.path.join(SCRIPT_DIR, "captcha.png")
+
+OUTPUT_FOLDER = os.path.join(SCRIPT_DIR, "output")
 LOG_CSV = os.path.join(OUTPUT_FOLDER, "results_log.csv")
 
 VALID_EXTENSIONS = (".png", ".jpg", ".jpeg", ".bmp", ".tif", ".tiff")
 
-# CAPTCHA text is alphanumeric and mixed-case, so DO NOT whitelist only
-# letters - that's exactly what turns '9' into 'O' etc. Keep both cases
-# and digits; whitelisting is still useful to block stray symbol noise.
 WHITELIST = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789"
 
-# Try a couple of PSMs per image - single-line (7/8) works well once the
-# image is cleanly segmented, 13 (raw line, no layout analysis) is a good
-# fallback for oddly-shaped CAPTCHA text.
 PSM_CANDIDATES = [7, 8, 13]
 OEM = 1  # LSTM engine
 
@@ -194,9 +171,6 @@ def ensure_black_text_on_white(binary):
 # --------------------------------------------------------------------------
 # PIPELINE DEFINITIONS
 # --------------------------------------------------------------------------
-# Each pipeline takes the original BGR image and returns a final binary
-# (or grayscale) image ready for OCR. Keeping them independent means a
-# technique that fails on one image doesn't drag down the others.
 
 def pipeline_otsu_basic(img):
     gray = to_gray(resize(img, 5))
@@ -284,13 +258,9 @@ def pipeline_component_filter(img):
     sat = hsv[:, :, 1]
     thresh = cv2.threshold(sat, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)[1]
 
-    # Step 2: dilate a working copy to bridge small gaps/fragments
     merge_kernel = np.ones((15, 15), np.uint8)
     dilated = cv2.dilate(thresh, merge_kernel, iterations=1)
 
-    # Step 3: keep components above an area threshold (tuned relative to
-    # the 5x-upscaled resolution; scales with image size automatically
-    # since it's a fraction of total pixel count)
     min_area = max(300, int(0.0015 * resized.shape[0] * resized.shape[1]))
     n, labels, stats, _ = cv2.connectedComponentsWithStats(dilated, connectivity=8)
     keep_mask = np.zeros_like(thresh)
@@ -298,7 +268,6 @@ def pipeline_component_filter(img):
         if stats[i][cv2.CC_STAT_AREA] >= min_area:
             keep_mask[labels == i] = 255
 
-    # Step 4: apply the keep-decision back onto the crisp original pixels
     final_mask = cv2.bitwise_and(thresh, keep_mask)
     cleaned = morph_clean(final_mask, (2, 2), (2, 2))
     return ensure_black_text_on_white(cv2.bitwise_not(cleaned))
@@ -335,8 +304,6 @@ def run_ocr(image, psm_candidates=PSM_CANDIDATES):
     the (text, avg_confidence, psm) of the best-scoring PSM attempt."""
     best_text, best_conf, best_psm = "", -1.0, -1
 
-    # Tesseract handles glyphs touching the image border poorly - a
-    # generous white margin measurably improves recognition.
     padded = cv2.copyMakeBorder(image, 25, 25, 25, 25,
                                  cv2.BORDER_CONSTANT, value=255)
 
@@ -402,8 +369,6 @@ def pick_best_variant(variants):
 
     def score(v):
         agreement = votes[normalize(v.text)]
-        # Agreement (how many pipelines produced this exact text) is the
-        # primary signal; confidence only breaks ties within that level.
         return (agreement, v.confidence)
 
     return max(valid, key=score)
@@ -428,8 +393,7 @@ def process_image(filename, image_path):
         cv2.imwrite(out_path, processed)
 
         text, conf, psm = run_ocr(processed)
-        variants.append(VariantResult(name=name, image=processed,
-                                       text=text, confidence=conf, psm_used=psm))
+        variants.append(VariantResult(name=name, image=processed,text=text, confidence=conf, psm_used=psm))
 
     if not variants:
         print(f"[FAIL] No pipeline produced a result for {filename}")
@@ -445,50 +409,27 @@ def process_image(filename, image_path):
     return best, variants
 
 
-def main():
+def read_captcha(image_path):
     ensure_output_dirs()
 
-    if not os.path.isdir(INPUT_FOLDER):
-        print(f"Input folder '{INPUT_FOLDER}' not found.")
+    if not os.path.isfile(image_path):
+        print(f"Input image '{image_path}' not found.")
         return
 
-    filenames = [f for f in sorted(os.listdir(INPUT_FOLDER))
-                 if f.lower().endswith(VALID_EXTENSIONS)]
-
-    if not filenames:
-        print(f"No images found in '{INPUT_FOLDER}'.")
+    filename = os.path.basename(image_path)
+    if not filename.lower().endswith(VALID_EXTENSIONS):
+        print(f"'{filename}' doesn't look like a supported image type.")
         return
 
     rows = []
-    for filename in filenames:
-        image_path = os.path.join(INPUT_FOLDER, filename)
-        result = process_image(filename, image_path)
-        if result is None:
-            continue
+    result = process_image(filename, image_path)
+    if result is not None:
         best, all_variants = result
 
         print(f"\nImage: {filename}")
         print(f"  Best technique : {best.name} (psm={best.psm_used})")
         print(f"  Avg confidence : {best.confidence:.2f}")
         print(f"  Recognized text: {best.text}")
-
-        rows.append({
-            "filename": filename,
-            "best_pipeline": best.name,
-            "psm": best.psm_used,
-            "avg_confidence": round(best.confidence, 2),
-            "recognized_text": best.text,
-            "all_scores": "; ".join(f"{v.name}={v.confidence:.1f}" for v in all_variants),
-        })
-
-    # Write CSV log
-    if rows:
-        with open(LOG_CSV, "w", newline="", encoding="utf-8") as f:
-            writer = csv.DictWriter(f, fieldnames=list(rows[0].keys()))
-            writer.writeheader()
-            writer.writerows(rows)
-        print(f"\nLog written to {LOG_CSV}")
+        return best.text
 
 
-if __name__ == "__main__":
-    main()

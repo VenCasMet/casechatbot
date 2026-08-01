@@ -1,0 +1,2 @@
+filename,best_pipeline,psm,avg_confidence,recognized_text,all_scores
+captcha.png,otsu_basic,7,96.0,2190,otsu_basic=96.0; adaptive_thresh=96.0; clahe_otsu=96.0; sharpen_otsu=96.0; line_removal=94.0; blackhat=48.0; deskewed_otsu=96.0; color_saturation=96.0; component_filter=96.0
